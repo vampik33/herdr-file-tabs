@@ -42,8 +42,8 @@ async function directory(path, on) {
   return out;
 }
 
-// For file $1, prints the first terminal app (Terminal=true) that can open it: its desktop id,
-// "true" and its Exec= line; nothing when there is none. Candidates in order: the default app,
+// For file $1, prints the Exec= line of the first terminal app (Terminal=true) that can open
+// it; nothing when there is none. Candidates in order: the default app,
 // then every app gio registers for the type (gio includes parent types: .json and .md get
 // text/plain's editors); for text/* types with none (text/x-rust), text/plain's.
 const RESOLVE = String.raw`
@@ -53,13 +53,13 @@ list=$(apps "$mime")
 case "$mime" in text/*) [ -n "$list" ] || list=$(apps text/plain) ;; esac
 home=$XDG_DATA_HOME; [ -n "$home" ] || home=$HOME/.local/share
 dirs=$XDG_DATA_DIRS; [ -n "$dirs" ] || dirs=/usr/local/share:/usr/share
+set -f; IFS=:; set -- $home $dirs; unset IFS
 printf '%s\n' "$list" | while IFS= read -r app; do
   [ -n "$app" ] || continue
-  IFS=:
-  for d in $home $dirs; do
+  for d; do
     f=$d/applications/$app
     [ -f "$f" ] || continue
-    e=$(awk '/^\[/ { s = ($0 == "[Desktop Entry]") } s && /^Terminal=/ { t = substr($0, 10) } s && /^Exec=/ && !e { e = substr($0, 6) } END { if (t != "true" || e == "") exit 1; print e }' "$f") && { printf '%s\ntrue\n%s\n' "$app" "$e"; exit 0; }
+    awk '/^\[/ { s = ($0 == "[Desktop Entry]") } s && /^Terminal=/ { t = substr($0, 10) } s && /^Exec=/ && !e { e = substr($0, 6) } END { if (t != "true" || e == "") exit 1; print e }' "$f" && exit 0
     break
   done
 done
@@ -83,8 +83,8 @@ export default class FilesTabs extends View {
     cx.spawn(async () => {
       try {
         const r = await exec("sh", ["-c", RESOLVE, MOD, file], { on });
-        const [, terminal, line] = r.stdout.split("\n");
-        const argv = terminal === "true" && line ? execArgv(line, file) : null;
+        const line = r.stdout.split("\n")[0];
+        const argv = line ? execArgv(line, file) : null;
         if (argv) run("tab.new", { name: path, space, folder, argv });
         else if (on) fail(`No terminal app for it on ${on}`);
         else {
