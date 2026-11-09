@@ -4,7 +4,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, window, run, notify } from "herdr";
-import { fileTab } from "./match.js";
+import { fileTab, execArgv } from "./match.js";
 
 const MOD = "files-tabs";
 
@@ -65,31 +65,6 @@ printf '%s\n' "$list" | while IFS= read -r app; do
 done
 `;
 
-// A desktop entry's Exec line as argv, with the file in place of its %f/%F/%u/%U code
-// (appended when there is none); %i, %c and %k are dropped.
-function execArgv(line, file) {
-  const words = [];
-  let word = null, quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quoted) {
-      if (c === '"') quoted = false;
-      else word += c === "\\" && i + 1 < line.length ? line[++i] : c;
-    } else if (c === '"') { quoted = true; word ??= ""; }
-    else if (c === " " || c === "\t") { if (word !== null) words.push(word); word = null; }
-    else word = (word ?? "") + c;
-  }
-  if (word !== null) words.push(word);
-  let used = false;
-  const argv = words.filter(w => !/^%[ick]$/.test(w)).map(w => w.replace(/%([fFuU%])/g, (_m, c) => {
-    if (c === "%") return "%";
-    used = true;
-    return file;
-  }));
-  if (!used) argv.push(file);
-  return argv;
-}
-
 export default class FilesTabs extends View {
   init(_props, cx) {
     this.saved = new Map();
@@ -109,7 +84,8 @@ export default class FilesTabs extends View {
       try {
         const r = await exec("sh", ["-c", RESOLVE, MOD, file], { on });
         const [, terminal, line] = r.stdout.split("\n");
-        if (terminal === "true" && line) run("tab.new", { name: path, space, folder, argv: execArgv(line, file) });
+        const argv = terminal === "true" && line ? execArgv(line, file) : null;
+        if (argv) run("tab.new", { name: path, space, folder, argv });
         else if (on) fail(`No terminal app for it on ${on}`);
         else {
           // setsid -f: xdg-open can wait for the app; the app must outlive this call either way.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileTab } from "../mods/files-tabs/match.js";
+import { fileTab, execArgv } from "../mods/files-tabs/match.js";
 
 const editor = { shell: false }, shell = { shell: true };
 const space = tabs => ({ tabs });
@@ -34,4 +34,24 @@ test("unnamed tabs and mod panes are not reused", () => {
 
 test("no space", () => {
   assert.equal(fileTab(undefined, [], "README.md", "/p/a"), undefined);
+});
+
+test("Exec lines become argv with the file in place of its field code", () => {
+  const f = "/p q/$(touch x);.md";
+  assert.deepEqual(execArgv("micro %F", f), ["micro", f]);
+  assert.deepEqual(execArgv("kate -b %U", f), ["kate", "-b", f]);
+  assert.deepEqual(execArgv("vim", f), ["vim", f]);
+  assert.deepEqual(execArgv('"/opt/My App/bin" --x=%f %i %%', f), ["/opt/My App/bin", `--x=${f}`, "%"]);
+  assert.deepEqual(execArgv('sh -c "echo \\"hi\\""', f), ["sh", "-c", 'echo "hi"', f]);
+});
+
+test("a field code inside a quoted argument is refused, not run as shell code", () => {
+  assert.equal(execArgv('sh -c "micro %f"', "/p/$(touch x).md"), null);
+  assert.equal(execArgv('bash -c "vim %U"', "/p/a.md"), null);
+  assert.equal(execArgv('sh -c "echo 100%%"', "/p/a.md")?.[2], "echo 100%");
+});
+
+test("%F and %U only as arguments of their own", () => {
+  assert.equal(execArgv("app --files=%F", "/p/a.md"), null);
+  assert.deepEqual(execArgv("app --file=%f", "/p/a.md"), ["app", "--file=/p/a.md"]);
 });
