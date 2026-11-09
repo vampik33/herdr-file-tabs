@@ -1,0 +1,9 @@
+#!/bin/sh
+# xdg-open for Herdr's Ctrl+click on a path in terminal text: a text file opens in a files-tabs
+# viewer tab (open.mjs). Every other caller and link goes to the system's xdg-open, unchanged.
+# Installed as a link in a PATH folder before /usr/bin: ~/.local/bin/xdg-open.
+if [ $# -eq 1 ] && IFS= read -r parent < /proc/$PPID/comm 2>/dev/null && [ "$parent" = herdr-app ] &&
+  node "$(dirname "$(readlink -f "$0")")/open.mjs" "$1"; then
+  exit 0
+fi
+exec /usr/bin/xdg-open "$@"

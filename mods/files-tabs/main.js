@@ -1,20 +1,25 @@
-// Herdr's Files panel, except a click on a file opens it in a terminal app that can open its
-// type (Terminal=true, e.g. micro, vim) in a new tab in the main area; when there is none, in
-// its default desktop app (Gwenview, a browser, ...) via xdg-open. Linux only.
+// Herdr's Files panel, except a click on a text file opens it in a tab of its own: this mod
+// again, with props { file, on }, as a read-only viewer (rendered Markdown, or highlighted
+// code) whose Edit button opens a terminal editor (micro, vim) beside it. Other files open in
+// their default desktop app via xdg-open. bin/xdg-open does the same for Herdr's Ctrl+click.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, window, run, notify } from "herdr";
-import { fileTab, execArgv } from "./match.js";
+import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
+import { spaces, panes, focused, props, exec, readTextFile, watchFolder, theme, settings, home, window, run, notify } from "herdr";
+import { MOD, IS_TEXT, tabName, viewCommand, keepsTree, execArgv } from "./match.js";
 
-const MOD = "files-tabs";
+const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
+const MAX_TEXT = 400000, RECHECK_MS = 2000;
 
-function location() {
+// Where the tree points: the focused terminal's folder. A focused mod pane (a viewer tab) has
+// none, so with `last` (where it pointed in this space) the tree stays there.
+function location(last) {
   const space = spaces().find(s => s.active), f = focused();
   const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
+  if (keepsTree(pane, last, space?.id)) return last;
   const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on, space: space?.id };
 }
-const key = () => JSON.stringify(location());
+const key = last => JSON.stringify(location(last));
 const PER_FOLDER = 500, TOTAL = 5000;
 
 async function directory(path, on) {
@@ -65,28 +70,111 @@ printf '%s\n' "$list" | while IFS= read -r app; do
 done
 `;
 
+// The terminal editor for `file` on this computer, as argv; null when there is none.
+async function editorArgv(file) {
+  const r = await exec("sh", ["-c", RESOLVE, MOD, file]);
+  const line = r.stdout.split("\n")[0];
+  return line ? execArgv(line, file) : null;
+}
+
+// A viewer tab: the file read-only, reloaded when it changes on disk; Edit opens the
+// terminal editor in a pane beside it.
+class FileView {
+  constructor({ file, on }) {
+    this.file = file; this.on = on ?? null; this.markdown = /\.(md|markdown)$/i.test(file);
+    this.stamp = null; this.checking = false; this.text = null; this.code = null; this.error = null; this.editor = null;
+  }
+
+  start(cx) {
+    this.check(cx);
+    cx.timer.every(RECHECK_MS, cx => this.check(cx));
+    if (!this.on) cx.spawn(async cx => {
+      this.editor = await editorArgv(this.file).catch(() => null);
+      cx.notify();
+    });
+  }
+
+  // Reloads when the file's mtime, size or inode changed. Where stat fails (gone, or no GNU
+  // stat on another machine) the file is read once, and the read says whether it's there.
+  check(cx) {
+    if (this.checking) return;
+    this.checking = true;
+    cx.spawn(async cx => {
+      try {
+        const r = await exec("stat", ["-L", "-c", "%.9Y %s %i", this.file], { on: this.on });
+        const stamp = r.code === 0 ? r.stdout.trim() : "unknown";
+        if (stamp === this.stamp) return;
+        this.stamp = stamp;
+        await this.load();
+        cx.notify();
+      } catch (e) { this.error = String(e); this.stamp = null; cx.notify(); }
+      finally { this.checking = false; }
+    });
+  }
+
+  async load() {
+    const text = await readTextFile(this.file, { on: this.on });
+    if (text === null) { this.error = "This file is no longer available"; return; }
+    if (text.includes("\0")) { this.error = "Binary file · no text view"; return; }
+    this.error = null;
+    this.text = text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + "\n… (file truncated)" : text;
+    if (this.markdown) return;
+    if (this.code) { this.code.set_value(this.text); return; }
+    const t = theme(), ext = this.file.includes(".") ? this.file.split(".").pop() : "txt";
+    this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true, value: this.text,
+      font_family: settings().font_family, font_size: 12,
+      syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+  }
+
+  // The editor opens beside this pane: the one of this mod in the tab that was clicked.
+  edit() {
+    const tab = focused()?.tab, pane = panes().find(p => p.tab === tab && p.mod === MOD)?.pane;
+    run("pane.split", { direction: "right", pane, argv: this.editor });
+  }
+
+  close() { this.code?.release(); }
+
+  render() {
+    const t = theme(), app = this.editor?.[0].split("/").pop();
+    return v_flex().id("file-view").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
+      .child(h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(tabName(this.file, null, this.on ? null : home())))
+        .when(Boolean(this.editor), el => el.child(h_flex().id("file-edit").h(24).px(10).flex_none().items_center().rounded(6).cursor_pointer()
+          .border_1().border_color(t.border).text_size(12).hover(s => s.bg(t.hover)).on_click(() => this.edit()).child(`Edit in ${app}`))))
+      .child(this.error ? div().p(12).text_color(t.dim).child(this.error)
+        : this.text === null ? div().p(12).text_color(t.dim).child("Loading file…")
+        : this.markdown ? div().id("file-md").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(12).child(TextView.markdown("file-md-text", this.text).selectable(true))
+        : Editor.new(this.code).flex_1().min_h(0));
+  }
+}
+
+// One mod, two jobs: with props.file a viewer tab (FileView), otherwise the Files panel.
 export default class FilesTabs extends View {
   init(_props, cx) {
+    // props(), not init's argument (empty for a mod tab), and only here: it names the copy whose turn it is.
+    const p = props();
+    if (p?.file) { this.view = new FileView(p); this.view.start(cx); return; }
     this.saved = new Map();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
   }
 
-  // A terminal app's tab for this file, still running it, is selected instead of opening another.
+  async close() { this.view?.close(); }
+
+  // A text file opens in a viewer tab named after it, or selects the space's tab of that name;
+  // anything else opens in its default desktop app.
   open(path, cx) {
-    const { space } = location(), file = `${this.root}/${path}`, on = this.on, folder = this.root;
-    const tab = fileTab(spaces().find(s => s.id === space), panes(), path, folder);
-    if (tab) return run("tab.select", { id: tab.id });
+    const file = `${this.root}/${path}`, on = this.on;
+    const [command, args] = viewCommand(spaces().find(s => s.active), file, on ? null : home(), on, panes());
+    if (command === "tab.select") return run(command, args);
     const fail = body => notify({ title: `Can't open ${path}`, body, level: "error" });
-    if (!on && window()?.platform !== "linux") return fail("Opening files in their default app works on Linux only");
+    if (!on && window()?.platform !== "linux") return fail("Opening files works on Linux only");
     cx.spawn(async () => {
       try {
-        const r = await exec("sh", ["-c", RESOLVE, MOD, file], { on });
-        const line = r.stdout.split("\n")[0];
-        const argv = line ? execArgv(line, file) : null;
-        if (argv) run("tab.new", { name: path, space, folder, argv });
-        else if (on) fail(`No terminal app for it on ${on}`);
+        const text = await exec("sh", ["-c", IS_TEXT, MOD, file], { on });
+        if (text.code === 0) run(command, args);
+        else if (on) fail(`Not a text file, and it's on ${on}`);
         else {
           // setsid -f: xdg-open can wait for the app; the app must outlive this call either way.
           const o = await exec("setsid", ["-f", "xdg-open", file]);
@@ -107,7 +195,7 @@ export default class FilesTabs extends View {
   }
 
   current(context) {
-    return this.context === context && key() === context.key;
+    return this.context === context && key(context.at) === context.key;
   }
 
   async loadFolder(path, context) {
@@ -120,10 +208,10 @@ export default class FilesTabs extends View {
   }
 
   refresh(cx) {
-    const { cwd, on } = location(), next = key();
+    const at = location(this.context?.at), { cwd, on } = at, next = JSON.stringify(at);
     if (next !== this.context?.key) {
       if (this.context) this.saved.set(this.context.key, this.folders);
-      this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(this.saved.get(next));
+      this.context = { key: next, cwd, on, at }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(this.saved.get(next));
       this.pending = new Set(); this.marks = {}; this.watched = null; this.error = null; this.limited = false;
       this.loading = false;
     }
@@ -192,7 +280,8 @@ export default class FilesTabs extends View {
   }
 
   render(cx) {
-    if (key() !== this.context?.key) this.refresh(cx);
+    if (this.view) return this.view.render();
+    if (key(this.context?.at) !== this.context?.key) this.refresh(cx);
     const t = theme();
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
