@@ -91,6 +91,9 @@ test("a field code in a word with a quoted part is refused too", () => {
   assert.equal(execArgv('sh -c "micro "%f', f), null, "code right after the quotes");
   assert.equal(execArgv('sh -c "micro \\%f"', f), null, "escaped % inside the quotes");
   assert.equal(execArgv('sh -c "vim \\\\"%f\\\\""', f), null, "spec-escaped backslash before the quote");
+  assert.equal(execArgv('sh -c "micro %\\f"', f), null, "escaped letter of the code");
+  assert.equal(execArgv('sh -c "a%"f', f), null, "code split by the closing quote");
+  assert.equal(execArgv('sh -c "micro \\%f', f), null, "unterminated quote");
   assert.deepEqual(execArgv('"/opt/My App/bin" --x=%f', f), ["/opt/My App/bin", `--x=${f}`]);
 });
 
