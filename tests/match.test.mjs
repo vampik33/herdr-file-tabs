@@ -86,6 +86,14 @@ test("a field code inside a quoted argument is refused, not run as shell code", 
   assert.equal(execArgv('sh -c "echo 100%%"', "/p/a.md")?.[2], "echo 100%");
 });
 
+test("a field code in a word with a quoted part is refused too", () => {
+  const f = "/p/$(touch x).md";
+  assert.equal(execArgv('sh -c "micro "%f', f), null, "code right after the quotes");
+  assert.equal(execArgv('sh -c "micro \\%f"', f), null, "escaped % inside the quotes");
+  assert.equal(execArgv('sh -c "vim \\\\"%f\\\\""', f), null, "spec-escaped backslash before the quote");
+  assert.deepEqual(execArgv('"/opt/My App/bin" --x=%f', f), ["/opt/My App/bin", `--x=${f}`]);
+});
+
 test("%F and %U only as arguments of their own", () => {
   assert.equal(execArgv("app --files=%F", "/p/a.md"), null);
   assert.deepEqual(execArgv("app --file=%f", "/p/a.md"), ["app", "--file=/p/a.md"]);
