@@ -58,19 +58,27 @@ export function linkFile(link, home, exists) {
 // inside a quoted argument or %F/%U isn't an argument of its own, which the spec leaves
 // undefined: `sh -c "micro %f"` would run the file's name as shell code.
 export function execArgv(line, file) {
+  // A word with any quoted part may not hold a field code at all, wherever the code ends up
+  // in it: `"micro "%f` and `"micro \%f"` put the file inside a quoted argument too.
   const words = [];
-  let word = null, quoted = false;
+  let word = null, quoted = false, hasQuote = false;
+  const end = () => {
+    if (word !== null && hasQuote && /%[fFuUick]/.test(word.replace(/%%/g, ""))) return false;
+    if (word !== null) words.push(word);
+    word = null; hasQuote = false;
+    return true;
+  };
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (quoted) {
       if (c === '"') quoted = false;
       else if (c === "%" && /[fFuUick]/.test(line[i + 1] ?? "")) return null;
       else word += c === "\\" && i + 1 < line.length ? line[++i] : c;
-    } else if (c === '"') { quoted = true; word ??= ""; }
-    else if (c === " " || c === "\t") { if (word !== null) words.push(word); word = null; }
+    } else if (c === '"') { quoted = true; hasQuote = true; word ??= ""; }
+    else if (c === " " || c === "\t") { if (!end()) return null; }
     else word = (word ?? "") + c;
   }
-  if (word !== null) words.push(word);
+  if (!end()) return null;
   let used = false;
   const argv = [];
   for (const w of words) {
