@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IS_TEXT, tabName, viewCommand, keepsTree, linkFile, execArgv } from "../mods/files-tabs/match.js";
+import { IS_TEXT, tabName, viewCommand, keepsTree, linkFile, EDIT, editorName } from "../mods/files-tabs/match.js";
 
 test("tab names: relative to the space's folder, else ~/, else absolute", () => {
   assert.equal(tabName("/p/a/src/main.py", "/p/a", "/home/u"), "src/main.py");
@@ -71,33 +71,15 @@ test("IS_TEXT: text and empty files pass; binaries, folders and missing files do
   assert.ok(!is("bin") && !is("folder") && !is("missing"));
 });
 
-test("Exec lines become argv with the file in place of its field code", () => {
-  const f = "/p q/$(touch x);.md";
-  assert.deepEqual(execArgv("micro %F", f), ["micro", f]);
-  assert.deepEqual(execArgv("kate -b %U", f), ["kate", "-b", f]);
-  assert.deepEqual(execArgv("vim", f), ["vim", f]);
-  assert.deepEqual(execArgv('"/opt/My App/bin" --x=%f %i %%', f), ["/opt/My App/bin", `--x=${f}`, "%"]);
-  assert.deepEqual(execArgv('sh -c "echo \\"hi\\""', f), ["sh", "-c", 'echo "hi"', f]);
+test("EDIT runs $EDITOR's words with the file as one argument, never as shell code", () => {
+  const dir = mkdtempSync(join(tmpdir(), "files-tabs-")), f = join(dir, "a b $(touch pwned);.md");
+  const edit = editor => spawnSync("sh", ["-c", EDIT, "t", f], { cwd: dir, encoding: "utf8", env: { ...process.env, EDITOR: editor } });
+  assert.equal(edit("printf [%s] --wait").stdout, `[--wait][${f}]`);
+  assert.equal(edit(`printf '<%s>' "two words"`).stdout, `<two words><${f}>`);
+  assert.ok(!existsSync(join(dir, "pwned")), "the file's name was run as shell code");
 });
 
-test("a field code inside a quoted argument is refused, not run as shell code", () => {
-  assert.equal(execArgv('sh -c "micro %f"', "/p/$(touch x).md"), null);
-  assert.equal(execArgv('bash -c "vim %U"', "/p/a.md"), null);
-  assert.equal(execArgv('sh -c "echo 100%%"', "/p/a.md")?.[2], "echo 100%");
-});
-
-test("a field code in a word with a quoted part is refused too", () => {
-  const f = "/p/$(touch x).md";
-  assert.equal(execArgv('sh -c "micro "%f', f), null, "code right after the quotes");
-  assert.equal(execArgv('sh -c "micro \\%f"', f), null, "escaped % inside the quotes");
-  assert.equal(execArgv('sh -c "vim \\\\"%f\\\\""', f), null, "spec-escaped backslash before the quote");
-  assert.equal(execArgv('sh -c "micro %\\f"', f), null, "escaped letter of the code");
-  assert.equal(execArgv('sh -c "a%"f', f), null, "code split by the closing quote");
-  assert.equal(execArgv('sh -c "micro \\%f', f), null, "unterminated quote");
-  assert.deepEqual(execArgv('"/opt/My App/bin" --x=%f', f), ["/opt/My App/bin", `--x=${f}`]);
-});
-
-test("%F and %U only as arguments of their own", () => {
-  assert.equal(execArgv("app --files=%F", "/p/a.md"), null);
-  assert.deepEqual(execArgv("app --file=%f", "/p/a.md"), ["app", "--file=/p/a.md"]);
+test("the Edit button names $EDITOR's command", () => {
+  assert.equal(editorName("zed --wait"), "zed");
+  assert.equal(editorName(" /usr/bin/micro\n"), "micro");
 });
