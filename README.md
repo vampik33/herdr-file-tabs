@@ -8,9 +8,11 @@ a preview inside the side panel.
   the space's folder (`src/main.py`; `~/notes.md` outside it). Markdown is
   rendered; everything else is highlighted code with line numbers. The view
   reloads when the file changes on disk.
-- **Edit in micro**: the viewer's button opens the file in your terminal
-  editor in a pane beside it, so the view updates as you save. Quitting the
-  editor closes its pane.
+- **Edit in zed**: the viewer's button opens the file in `$EDITOR` (named
+  after its command), in the editor's own window; the view updates as you
+  save. The button is hidden when Herdr's environment has no `$EDITOR`.
+  `$EDITOR` is run like git runs it, as shell words (`zed --wait`), so it
+  should be a GUI editor: a terminal one (`micro`) gets no terminal.
 - **Other files** (images, PDFs, binaries) open in their default desktop app,
   in its own window, through `xdg-open`.
 - Clicking a file that already has a viewer tab selects that tab.
@@ -18,18 +20,11 @@ a preview inside the side panel.
   output, compiler errors) opens it the same way, with the optional
   `xdg-open` link below. A `:line` or `:line:column` suffix is dropped.
 
-Which editor the button opens: the file type's default app if it is a
-terminal app (a desktop entry with `Terminal=true`), else the first terminal
-app among those `gio mime <type>` lists (it includes apps of parent types),
-else, for a `text/*` type with no apps at all (`text/x-rust`), the first among
-`text/plain`'s. To choose, make your terminal editor the type's default:
-`xdg-mime default micro.desktop text/x-shellscript`.
-
 ## Requirements
 
 - Herdr app 0.1.14 or later, on Linux.
-- `xdg-utils` (`xdg-mime`, `xdg-open`), GNU `grep` and `stat`, and `setsid`
-  (util-linux). `gio` is optional.
+- `xdg-utils` (`xdg-open`), GNU `grep` and `stat`, and `setsid`
+  (util-linux).
 - For Ctrl+click: Node.js on Herdr's `PATH`.
 
 ## Install
@@ -79,8 +74,6 @@ linked it, and delete `~/.config/herdr-app/mods/files-tabs`.
 - A viewer tab is found by its name: renaming it stops reuse, and a tab you
   named like a file's path (`notes.md`) is selected instead of opening that
   file.
-- Desktop ids with a vendor prefix that maps to a subfolder
-  (`applications/kde/foo.desktop`) aren't found, so such editors are skipped.
 
 ## Tests
 

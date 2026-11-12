@@ -53,43 +53,11 @@ export function linkFile(link, home, exists) {
   return bare !== path && !exists(path) && exists(bare) ? bare : path;
 }
 
-// A desktop entry's Exec line as argv, with the file in place of its %f/%F/%u/%U code
-// (appended when there is none); %i, %c and %k are dropped and %% is %. Null when a code sits
-// inside a quoted argument or %F/%U isn't an argument of its own, which the spec leaves
-// undefined: `sh -c "micro %f"` would run the file's name as shell code.
-export function execArgv(line, file) {
-  // A word with any quoted part may not hold a field code at all, wherever the code ends up
-  // in it: `"micro "%f` and `"micro \%f"` put the file inside a quoted argument too.
-  const words = [];
-  let word = null, quoted = false, hasQuote = false;
-  const end = () => {
-    if (word !== null && hasQuote && /%[fFuUick]/.test(word.replace(/%%/g, ""))) return false;
-    if (word !== null) words.push(word);
-    word = null; hasQuote = false;
-    return true;
-  };
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (quoted) {
-      if (c === '"') quoted = false;
-      else if (c === "%" && /[fFuUick]/.test(line[i + 1] ?? "")) return null;
-      else word += c === "\\" && i + 1 < line.length ? line[++i] : c;
-    } else if (c === '"') { quoted = true; hasQuote = true; word ??= ""; }
-    else if (c === " " || c === "\t") { if (!end()) return null; }
-    else word = (word ?? "") + c;
-  }
-  if (!end()) return null;
-  let used = false;
-  const argv = [];
-  for (const w of words) {
-    if (/^%[ick]$/.test(w)) continue;
-    if (/%[FU]/.test(w.replace(/%%/g, "")) && !/^%[FU]$/.test(w)) return null;
-    argv.push(w.replace(/%([fFuU%])/g, (_m, c) => {
-      if (c === "%") return "%";
-      used = true;
-      return file;
-    }));
-  }
-  if (!used) argv.push(file);
-  return argv;
+// sh script: opens file $1 in $EDITOR the way git does, as shell words, so quotes and options
+// in it work (`zed --wait`); the file stays one argument and is never run as shell code.
+export const EDIT = 'eval "exec $EDITOR \\"\\$1\\""';
+
+// The button's name for an $EDITOR value: its command's base name (`zed --wait` -> zed).
+export function editorName(editor) {
+  return editor.trim().split(/\s+/)[0].split("/").pop();
 }

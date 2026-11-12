@@ -1,11 +1,11 @@
 // Herdr's Files panel, except a click on a text file opens it in a tab of its own: this mod
 // again, with props { file, on }, as a read-only viewer (rendered Markdown, or highlighted
-// code) whose Edit button opens a terminal editor (micro, vim) beside it. Other files open in
+// code) whose Edit button opens the file in $EDITOR, in its own window. Other files open in
 // their default desktop app via xdg-open. bin/xdg-open does the same for Herdr's Ctrl+click.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, props, exec, readTextFile, watchFolder, theme, settings, home, window, run, notify } from "herdr";
-import { MOD, IS_TEXT, tabName, viewCommand, keepsTree, execArgv } from "./match.js";
+import { MOD, IS_TEXT, EDIT, tabName, viewCommand, keepsTree, editorName } from "./match.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const MAX_TEXT = 400000, RECHECK_MS = 2000;
@@ -47,38 +47,7 @@ async function directory(path, on) {
   return out;
 }
 
-// For file $1, prints the Exec= line of the first terminal app (Terminal=true) that can open
-// it; nothing when there is none. Candidates in order: the default app,
-// then every app gio registers for the type (gio includes parent types: .json and .md get
-// text/plain's editors); for text/* types with none (text/x-rust), text/plain's.
-const RESOLVE = String.raw`
-apps() { xdg-mime query default "$1" 2>/dev/null; LC_ALL=C gio mime "$1" 2>/dev/null | sed -n 's/^Default application for .*: //p; s/^\t//p'; }
-mime=$(xdg-mime query filetype "$1" 2>/dev/null)
-list=$(apps "$mime")
-case "$mime" in text/*) [ -n "$list" ] || list=$(apps text/plain) ;; esac
-home=$XDG_DATA_HOME; [ -n "$home" ] || home=$HOME/.local/share
-dirs=$XDG_DATA_DIRS; [ -n "$dirs" ] || dirs=/usr/local/share:/usr/share
-set -f; IFS=:; set -- $home $dirs; unset IFS
-printf '%s\n' "$list" | while IFS= read -r app; do
-  [ -n "$app" ] || continue
-  for d; do
-    f=$d/applications/$app
-    [ -f "$f" ] || continue
-    awk '/^\[/ { s = ($0 == "[Desktop Entry]") } s && /^Terminal=/ { t = substr($0, 10) } s && /^Exec=/ && !e { e = substr($0, 6) } END { if (t != "true" || e == "") exit 1; print e }' "$f" && exit 0
-    break
-  done
-done
-`;
-
-// The terminal editor for `file` on this computer, as argv; null when there is none.
-async function editorArgv(file) {
-  const r = await exec("sh", ["-c", RESOLVE, MOD, file]);
-  const line = r.stdout.split("\n")[0];
-  return line ? execArgv(line, file) : null;
-}
-
-// A viewer tab: the file read-only, reloaded when it changes on disk; Edit opens the
-// terminal editor in a pane beside it.
+// A viewer tab: the file read-only, reloaded when it changes on disk; Edit opens it in $EDITOR.
 class FileView {
   constructor({ file, on }) {
     this.file = file; this.on = on ?? null; this.markdown = /\.(md|markdown)$/i.test(file);
@@ -89,7 +58,8 @@ class FileView {
     this.check(cx);
     cx.timer.every(RECHECK_MS, cx => this.check(cx));
     if (!this.on) cx.spawn(async cx => {
-      this.editor = await editorArgv(this.file).catch(() => null);
+      const r = await exec("sh", ["-c", 'printf %s "$EDITOR"']).catch(() => null);
+      this.editor = r?.stdout.trim() ? editorName(r.stdout) : null;
       cx.notify();
     });
   }
@@ -126,21 +96,26 @@ class FileView {
       syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
   }
 
-  // The editor opens beside this pane: the one of this mod in the tab that was clicked.
-  edit() {
-    const tab = focused()?.tab, pane = panes().find(p => p.tab === tab && p.mod === MOD)?.pane;
-    run("pane.split", { direction: "right", pane, argv: this.editor });
+  // setsid -f: the editor gets its own window and outlives this call (`zed --wait` waits).
+  edit(cx) {
+    cx.spawn(async () => {
+      const fail = body => notify({ title: `Can't open ${this.editor}`, body, level: "error" });
+      try {
+        const r = await exec("setsid", ["-f", "sh", "-c", EDIT, MOD, this.file]);
+        if (r.code !== 0) fail(r.stderr || `setsid exited with ${r.code}`);
+      } catch (e) { fail(String(e)); }
+    });
   }
 
   close() { this.code?.release(); }
 
   render() {
-    const t = theme(), app = this.editor?.[0].split("/").pop();
+    const t = theme();
     return v_flex().id("file-view").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .child(h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(tabName(this.file, null, this.on ? null : home())))
         .when(Boolean(this.editor), el => el.child(h_flex().id("file-edit").h(24).px(10).flex_none().items_center().rounded(6).cursor_pointer()
-          .border_1().border_color(t.border).text_size(12).hover(s => s.bg(t.hover)).on_click(() => this.edit()).child(`Edit in ${app}`))))
+          .border_1().border_color(t.border).text_size(12).hover(s => s.bg(t.hover)).on_click((_e, cx) => this.edit(cx)).child(`Edit in ${this.editor}`))))
       .child(this.error ? div().p(12).text_color(t.dim).child(this.error)
         : this.text === null ? div().p(12).text_color(t.dim).child("Loading file…")
         : this.markdown ? div().id("file-md").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(12).child(TextView.markdown("file-md-text", this.text).selectable(true))
