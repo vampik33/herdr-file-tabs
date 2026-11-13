@@ -103,7 +103,7 @@ class FileView {
       const fail = body => notify({ title: `Can't open ${this.editor}`, body, level: "error" });
       try {
         const r = await exec("sh", ["-c", LAUNCH, MOD, EDIT, this.file]);
-        if (r.code !== 0) fail(`${(r.stdout || r.stderr).trim().slice(0, 500) || `exited with ${r.code}`}\n$EDITOR runs in its own window, without a terminal: it must be a GUI editor.`);
+        if (r.code !== 0) fail((r.stdout || r.stderr).trim() || `exited with ${r.code}`);
       } catch (e) { fail(String(e)); }
     });
   }

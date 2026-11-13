@@ -59,7 +59,8 @@ export const EDIT = 'eval "exec $EDITOR \\"\\$1\\""';
 
 // sh script: runs launcher $1 (EDIT) on file $2 in a session of its own, detached, and watches
 // it for 3 s, since `setsid -f` alone exits 0 before the editor has even started. Exits 1 and
-// prints why when by then the editor quit with an error, or with a terminal complaint on stdout:
+// prints why (its first 500 bytes, and that $EDITOR must be a GUI editor after a terminal
+// complaint) when by then the editor quit with an error, or with a terminal complaint on stdout:
 // micro without one prints "open /dev/tty: …" and exits 0. Still running, or quit otherwise
 // (`zed` handing the file to an open window), is success. The detached processes hold none of
 // exec's pipes, and the editor's output can't pile up in the temp folder however long it runs:
@@ -85,7 +86,8 @@ if [ -e "$d/code" ]; then
   code=$(cat "$d/code")
   if [ "$code" != 0 ] || grep -qiE '/dev/tty|terminal' "$d/out"; then
     s=1
-    if [ -s "$d/err" ]; then cat "$d/err"; elif [ -s "$d/out" ]; then cat "$d/out"; else echo "exited with $code"; fi
+    if [ -s "$d/err" ]; then head -c 500 "$d/err"; elif [ -s "$d/out" ]; then head -c 500 "$d/out"; else echo "exited with $code"; fi
+    if grep -qiE '/dev/tty|terminal' "$d/out" "$d/err"; then printf '\n%s\n' '$EDITOR runs in its own window, without a terminal: it must be a GUI editor.'; fi
   fi
 fi
 : >"$d/read"
