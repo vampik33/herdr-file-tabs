@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IS_TEXT, tabName, viewCommand, keepsTree, linkFile, EDIT, editorName } from "../mods/files-tabs/match.js";
+import { IS_TEXT, tabName, viewCommand, keepsTree, linkFile, EDIT, LAUNCH, editorName } from "../mods/files-tabs/match.js";
 
 test("tab names: relative to the space's folder, else ~/, else absolute", () => {
   assert.equal(tabName("/p/a/src/main.py", "/p/a", "/home/u"), "src/main.py");
@@ -77,6 +77,54 @@ test("EDIT runs $EDITOR's words with the file as one argument, never as shell co
   assert.equal(edit("printf [%s] --wait").stdout, `[--wait][${f}]`);
   assert.equal(edit(`printf '<%s>' "two words"`).stdout, `<two words><${f}>`);
   assert.ok(!existsSync(join(dir, "pwned")), "the file's name was run as shell code");
+});
+
+// LAUNCH as Edit runs it, with TMPDIR of its own to check it cleans up. spawnSync waits for
+// exec's pipes to close, so a detached editor holding them would show as a slow launch.
+function launch(editor, file = "/p/a.md") {
+  const tmp = mkdtempSync(join(tmpdir(), "files-tabs-launch-")), start = Date.now();
+  const r = spawnSync("sh", ["-c", LAUNCH, "t", EDIT, file], { encoding: "utf8", timeout: 10000, env: { ...process.env, EDITOR: editor, TMPDIR: tmp } });
+  return { ...r, ms: Date.now() - start, tmp };
+}
+
+test("LAUNCH reports an editor that fails within 3 s, with its stderr, else its stdout", () => {
+  const missing = launch("no-such-editor-files-tabs --wait");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /no-such-editor-files-tabs.*not found/);
+  const syntax = launch("zed 'unbalanced");
+  assert.equal(syntax.status, 1);
+  assert.notEqual(syntax.stdout.trim(), "");
+  const vim = launch(`sh -c 'printf "\\033[?1049h"; echo "Input is not from a terminal" >&2; exit 1' vim`);
+  assert.deepEqual([vim.status, vim.stdout], [1, "Input is not from a terminal\n"], "stderr wins over stdout's escapes");
+  const micro = launch(`sh -c 'echo "Fatal: Micro could not initialize a Screen."' micro`);
+  assert.deepEqual([micro.status, micro.stdout], [1, "Fatal: Micro could not initialize a Screen.\n"], "exit 0 after printing to stdout is a failure");
+  const quiet = launch("sh -c 'exit 3'");
+  assert.deepEqual([quiet.status, quiet.stdout], [1, "exited with 3\n"]);
+  for (const r of [missing, syntax, vim, micro, quiet]) {
+    assert.ok(r.ms < 2500, `reported after ${r.ms} ms`);
+    assert.deepEqual(readdirSync(r.tmp), [], "its temp folder is gone");
+  }
+});
+
+test("LAUNCH: an editor that quits silently, or chatters on stderr, opened the file", () => {
+  for (const editor of ["true", "sh -c 'echo Gtk-WARNING >&2'"]) {
+    const r = launch(editor);
+    assert.deepEqual([r.status, r.stdout], [0, ""], editor);
+    assert.ok(r.ms < 2500, `${editor}: took ${r.ms} ms`);
+    assert.deepEqual(readdirSync(r.tmp), []);
+  }
+});
+
+test("LAUNCH leaves a running editor detached, with the file as one argument", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "files-tabs-")), f = join(dir, "a b $(touch pwned);.md"), marker = join(dir, "marker");
+  const r = launch(`sh -c 'sleep 4; printf %s "$1" > "$0"' '${marker}'`, f);
+  assert.deepEqual([r.status, r.stdout], [0, ""]);
+  assert.ok(r.ms >= 2900 && r.ms < 3900, `watched it for ${r.ms} ms, not until it quit`);
+  assert.deepEqual(readdirSync(r.tmp), []);
+  for (let i = 0; i < 40 && !existsSync(marker); i++) await new Promise(ok => setTimeout(ok, 100));
+  assert.equal(readFileSync(marker, "utf8"), f);
+  assert.ok(!existsSync(join(dir, "pwned")));
+  assert.deepEqual(readdirSync(r.tmp), [], "the editor quitting late writes nothing back");
 });
 
 test("the Edit button names $EDITOR's command", () => {

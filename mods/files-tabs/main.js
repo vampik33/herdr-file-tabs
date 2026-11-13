@@ -5,7 +5,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
 import { spaces, panes, focused, props, exec, readTextFile, watchFolder, theme, settings, home, window, run, notify } from "herdr";
-import { MOD, IS_TEXT, EDIT, tabName, viewCommand, keepsTree, editorName } from "./match.js";
+import { MOD, IS_TEXT, EDIT, LAUNCH, tabName, viewCommand, keepsTree, editorName } from "./match.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const MAX_TEXT = 400000, RECHECK_MS = 2000;
@@ -96,13 +96,14 @@ class FileView {
       syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
   }
 
-  // setsid -f: the editor gets its own window and outlives this call (`zed --wait` waits).
+  // LAUNCH: the editor gets its own window and outlives this call (`zed --wait` waits), and
+  // one that fails within 3 s (not on PATH, or a terminal editor with no terminal) is reported.
   edit(cx) {
     cx.spawn(async () => {
       const fail = body => notify({ title: `Can't open ${this.editor}`, body, level: "error" });
       try {
-        const r = await exec("setsid", ["-f", "sh", "-c", EDIT, MOD, this.file]);
-        if (r.code !== 0) fail(r.stderr || `setsid exited with ${r.code}`);
+        const r = await exec("sh", ["-c", LAUNCH, MOD, EDIT, this.file]);
+        if (r.code !== 0) fail(`${(r.stdout || r.stderr).trim().slice(0, 500) || `exited with ${r.code}`}\n$EDITOR runs in its own window, without a terminal: it must be a GUI editor.`);
       } catch (e) { fail(String(e)); }
     });
   }

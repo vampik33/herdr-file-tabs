@@ -57,6 +57,26 @@ export function linkFile(link, home, exists) {
 // in it work (`zed --wait`); the file stays one argument and is never run as shell code.
 export const EDIT = 'eval "exec $EDITOR \\"\\$1\\""';
 
+// sh script: runs launcher $1 (EDIT) on file $2 in a session of its own, detached, and watches
+// it for 3 s, since `setsid -f` alone exits 0 before the editor has even started. Exits 1 and
+// prints why when by then the editor quit with an error, or printed to stdout: micro without a
+// terminal prints "Fatal: …" and exits 0. Still running, or quit silently (`zed` handing the
+// file to an open window), is success. The detached processes hold none of exec's pipes.
+export const LAUNCH = String.raw`d=$(mktemp -d) || exit
+setsid -f sh -c 'sh -c "$1" files-tabs "$2" </dev/null >"$3/out" 2>"$3/err"; echo $? >"$3/c" && mv "$3/c" "$3/code"' files-tabs "$1" "$2" "$d" </dev/null >/dev/null 2>&1 || { c=$?; rm -rf "$d"; echo "setsid exited with $c"; exit 1; }
+i=0
+while [ ! -e "$d/code" ] && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+s=0
+if [ -e "$d/code" ]; then
+  code=$(cat "$d/code")
+  if [ "$code" != 0 ] || [ -s "$d/out" ]; then
+    s=1
+    if [ -s "$d/err" ]; then cat "$d/err"; elif [ -s "$d/out" ]; then cat "$d/out"; else echo "exited with $code"; fi
+  fi
+fi
+rm -rf "$d"
+exit "$s"`;
+
 // The button's name for an $EDITOR value: its command's base name (`zed --wait` -> zed).
 export function editorName(editor) {
   return editor.trim().split(/\s+/)[0].split("/").pop();
