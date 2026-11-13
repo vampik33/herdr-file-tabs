@@ -12,7 +12,9 @@ a preview inside the side panel.
   after its command), in the editor's own window; the view updates as you
   save. The button is hidden when Herdr's environment has no `$EDITOR`.
   `$EDITOR` is run like git runs it, as shell words (`zed --wait`), so it
-  should be a GUI editor: a terminal one (`micro`) gets no terminal.
+  should be a GUI editor: a terminal one (`micro`) gets no terminal. An editor
+  that fails within 3 s (not on Herdr's `PATH`, or a terminal editor) shows
+  an error toast with its message.
 - **Other files** (images, PDFs, binaries) open in their default desktop app,
   in its own window, through `xdg-open`.
 - Clicking a file that already has a viewer tab selects that tab.

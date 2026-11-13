@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { IS_TEXT, tabName, viewCommand, keepsTree, linkFile, EDIT, editorName } from "../mods/files-tabs/match.js";
+import { IS_TEXT, tabName, viewCommand, keepsTree, linkFile, EDIT, LAUNCH, editorName } from "../mods/files-tabs/match.js";
 
 test("tab names: relative to the space's folder, else ~/, else absolute", () => {
   assert.equal(tabName("/p/a/src/main.py", "/p/a", "/home/u"), "src/main.py");
@@ -77,6 +77,95 @@ test("EDIT runs $EDITOR's words with the file as one argument, never as shell co
   assert.equal(edit("printf [%s] --wait").stdout, `[--wait][${f}]`);
   assert.equal(edit(`printf '<%s>' "two words"`).stdout, `<two words><${f}>`);
   assert.ok(!existsSync(join(dir, "pwned")), "the file's name was run as shell code");
+});
+
+// LAUNCH as Edit runs it, with TMPDIR of its own to check it cleans up. spawnSync waits for
+// exec's pipes to close, so a detached editor holding them would show as a slow launch.
+function launch(editor, file = "/p/a.md") {
+  const tmp = mkdtempSync(join(tmpdir(), "files-tabs-launch-")), start = Date.now();
+  const r = spawnSync("sh", ["-c", LAUNCH, "t", EDIT, file], { encoding: "utf8", timeout: 10000, env: { ...process.env, EDITOR: editor, TMPDIR: tmp } });
+  return { ...r, ms: Date.now() - start, tmp };
+}
+const scratch = () => mkdtempSync(join(tmpdir(), "files-tabs-"));
+const until = async (done, ms) => { for (let i = 0; i < ms / 100 && !done(); i++) await new Promise(ok => setTimeout(ok, 100)); return done(); };
+// The detached shell removes LAUNCH's folder once the editor has quit and the watch has read it.
+const cleaned = tmp => until(() => readdirSync(tmp).length === 0, 1000);
+
+const HINT = "\n$EDITOR runs in its own window, without a terminal: it must be a GUI editor.\n";
+
+test("LAUNCH reports an editor that fails within 3 s, with its stderr, else its stdout", async () => {
+  const missing = launch("no-such-editor-files-tabs --wait");
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /no-such-editor-files-tabs.*not found/);
+  assert.ok(!missing.stdout.includes("GUI editor"), "no terminal hint for a missing editor");
+  const syntax = launch("zed 'unbalanced");
+  assert.equal(syntax.status, 1);
+  assert.notEqual(syntax.stdout.trim(), "");
+  const vim = launch(`sh -c 'printf "\\033[?1049h"; echo "Input is not from a terminal" >&2; exit 1' vim`);
+  assert.deepEqual([vim.status, vim.stdout], [1, "Input is not from a terminal\n" + HINT], "stderr wins over stdout's escapes");
+  const micro = launch(`sh -c 'echo "open /dev/tty: no such device or address"; echo "Fatal: Micro could not initialize a Screen."' micro`);
+  assert.deepEqual([micro.status, micro.stdout], [1, "open /dev/tty: no such device or address\nFatal: Micro could not initialize a Screen.\n" + HINT],
+    "exit 0 after a terminal complaint on stdout is a failure");
+  const quiet = launch("sh -c 'exit 3'");
+  assert.deepEqual([quiet.status, quiet.stdout], [1, "exited with 3\n"]);
+  for (const r of [missing, syntax, vim, micro, quiet]) {
+    assert.ok(r.ms < 2500, `reported after ${r.ms} ms`);
+    assert.ok(await cleaned(r.tmp), "its temp folder is gone");
+  }
+});
+
+test("LAUNCH: an editor that quits with 0, chatter or not, opened the file", async () => {
+  for (const editor of ["true", "sh -c 'echo Gtk-WARNING >&2'", "sh -c 'echo CompileCommand: exclude x'"]) {
+    const r = launch(editor);
+    assert.deepEqual([r.status, r.stdout], [0, ""], editor);
+    assert.ok(r.ms < 2500, `${editor}: took ${r.ms} ms`);
+    assert.ok(await cleaned(r.tmp), editor);
+  }
+});
+
+// Real vim, where installed: with no terminal it reads commands from stderr, and waits forever
+// on a pipe there; on a file it quits after its 2 s warning.
+const vim = spawnSync("sh", ["-c", "command -v vim"]).status === 0;
+test("LAUNCH reports vim with no terminal, and vim quits", { skip: !vim && "no vim" }, async () => {
+  const f = join(scratch(), "a.txt");
+  writeFileSync(f, "hi\n");
+  const r = launch("vim -n", f);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /Input is not from a terminal/);
+  assert.ok(await cleaned(r.tmp), "vim is still running");
+});
+
+test("LAUNCH keeps 4 KiB of the editor's stdout and drains the rest, before and after 3 s", async () => {
+  const big = launch(`sh -c 'head -c 1000000 /dev/zero | tr "\\0" x; exit 1'`);
+  assert.deepEqual([big.status, big.stdout], [1, "x".repeat(500)], "the toast gets the first 500 bytes of 4 KiB kept");
+  const marker = join(scratch(), "marker");
+  // The shell writes itself (printf is built in), so a closed pipe's SIGPIPE would kill it.
+  const late = launch(`sh -c 'sleep 3.5; i=0; while [ $i -lt 2000 ]; do printf "%0500d\\n" 0; i=$((i + 1)); done; touch "$0"' '${marker}'`);
+  assert.deepEqual([late.status, late.stdout], [0, ""]);
+  assert.ok(await until(() => existsSync(marker), 4000), "the editor's late output blocked or killed it");
+  assert.ok(await cleaned(late.tmp));
+});
+
+test("LAUNCH empties a running editor's stderr every 10 s", async () => {
+  const marker = join(scratch(), "marker");
+  const r = launch(`sh -c 'sleep 3.5; head -c 1000000 /dev/zero >&2; sleep 9; touch "$0"; sleep 1' '${marker}'`);
+  assert.deepEqual([r.status, r.stdout], [0, ""]);
+  const [folder] = readdirSync(r.tmp), err = join(r.tmp, folder, "err");
+  assert.ok(await until(() => existsSync(err) && statSync(err).size === 1000000, 2000), "the stderr file holds the output");
+  assert.ok(await until(() => existsSync(marker), 12000));
+  assert.ok(statSync(err).size < 1000000, `stderr was not emptied: ${statSync(err).size} bytes`);
+  assert.ok(await until(() => readdirSync(r.tmp).length === 0, 3000), "the folder is gone once the editor quit");
+});
+
+test("LAUNCH leaves a running editor detached, with the file as one argument", async () => {
+  const dir = scratch(), f = join(dir, "a b $(touch pwned);.md"), marker = join(dir, "marker");
+  const r = launch(`sh -c 'sleep 4; printf %s "$1" > "$0"' '${marker}'`, f);
+  assert.deepEqual([r.status, r.stdout], [0, ""]);
+  assert.ok(r.ms >= 2900 && r.ms < 3900, `watched it for ${r.ms} ms, not until it quit`);
+  assert.ok(await until(() => existsSync(marker), 4000));
+  assert.equal(readFileSync(marker, "utf8"), f);
+  assert.ok(!existsSync(join(dir, "pwned")));
+  assert.ok(await cleaned(r.tmp), "the folder is gone once the editor quit");
 });
 
 test("the Edit button names $EDITOR's command", () => {
