@@ -146,6 +146,16 @@ test("LAUNCH keeps 4 KiB of the editor's stdout and drains the rest, before and 
   assert.ok(await cleaned(late.tmp));
 });
 
+test("LAUNCH's 500-byte cut drops a UTF-8 character it splits, and keeps a whole one", async () => {
+  const f = join(scratch(), "msg");
+  for (const [text, want] of [["x".repeat(499) + "жж", "x".repeat(499)], ["x".repeat(498) + "жж", "x".repeat(498) + "ж"]]) {
+    writeFileSync(f, text);
+    const r = launch(`sh -c 'cat "$0" >&2; exit 1' '${f}'`);
+    assert.deepEqual([r.status, r.stdout], [1, want]);
+    assert.ok(await cleaned(r.tmp));
+  }
+});
+
 test("LAUNCH empties a running editor's stderr every 10 s", async () => {
   const marker = join(scratch(), "marker");
   const r = launch(`sh -c 'sleep 3.5; head -c 1000000 /dev/zero >&2; sleep 9; touch "$0"; sleep 1' '${marker}'`);

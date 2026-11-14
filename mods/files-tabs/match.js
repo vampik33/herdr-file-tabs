@@ -67,7 +67,8 @@ export const EDIT = 'eval "exec $EDITOR \\"\\$1\\""';
 // stdout keeps its first 4 KiB and drains the rest, and stderr, a file emptied every 10 s,
 // can't be a pipe: vim with no terminal reads commands from it and would wait forever. It's
 // emptied until stdout closes, so also while a process the editor started holds both. The
-// detached shell removes the folder once the editor has quit and the watch has read it.
+// detached shell removes the folder once the editor has quit and the watch has read it. The
+// 500-byte cut drops a UTF-8 character it splits, so the toast never gets invalid UTF-8.
 export const LAUNCH = String.raw`d=$(mktemp -d) || exit
 setsid -f sh -c '
 keep() { head -c 4096 >"$1"; cat >/dev/null; }
@@ -86,7 +87,8 @@ if [ -e "$d/code" ]; then
   code=$(cat "$d/code")
   if [ "$code" != 0 ] || grep -qiE '/dev/tty|terminal' "$d/out"; then
     s=1
-    if [ -s "$d/err" ]; then head -c 500 "$d/err"; elif [ -s "$d/out" ]; then head -c 500 "$d/out"; else echo "exited with $code"; fi
+    first500() { head -c 500 "$1" | LC_ALL=C sed -E "\$ s/$(printf '([\302-\337]|[\340-\357][\200-\277]?|[\360-\364][\200-\277]{0,2})$')//"; }
+    if [ -s "$d/err" ]; then first500 "$d/err"; elif [ -s "$d/out" ]; then first500 "$d/out"; else echo "exited with $code"; fi
     if grep -qiE '/dev/tty|terminal' "$d/out" "$d/err"; then printf '\n%s\n' '$EDITOR runs in its own window, without a terminal: it must be a GUI editor.'; fi
   fi
 fi
